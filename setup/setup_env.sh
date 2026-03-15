@@ -33,6 +33,7 @@ pip install \
     peft==0.12.0 \
     trl==0.10.1 \
     bitsandbytes==0.43.3 \
+    rich \
     sentencepiece \
     einops \
     scipy \
