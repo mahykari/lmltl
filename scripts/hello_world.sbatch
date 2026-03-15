@@ -5,8 +5,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
-#SBATCH --output=logs/hello_world_%j.out
-#SBATCH --error=logs/hello_world_%j.err
+#SBATCH --output=hello_world_%j.out
+#SBATCH --error=hello_world_%j.err
 
 # ---------------------------------------------------------------------------
 # Phase 0 hello-world job.
@@ -38,7 +38,6 @@ export HF_DATASETS_CACHE="$MODEL_CACHE/datasets"
 export TOKENIZERS_PARALLELISM=false
 
 # -- Logging ----------------------------------------------------------------
-mkdir -p "$PROJECT_DIR/logs"
 mkdir -p "$OUTPUT_DIR"
 
 echo "Job ID:      $SLURM_JOB_ID"
