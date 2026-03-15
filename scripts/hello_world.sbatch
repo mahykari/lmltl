@@ -23,11 +23,8 @@ OUTPUT_DIR="$PROJECT_DIR/checkpoints/hello_world"
 
 # -- Environment ------------------------------------------------------------
 module load cuda/12.2.2
-module load conda
 
-# shellcheck disable=SC1090
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate lmltl
+PYTHON="/nfs/scistore16/tomgrp/$USER/.conda/envs/lmltl/bin/python"
 
 # Point HuggingFace to the pre-staged model weights (no outbound internet needed).
 export HF_HOME="$MODEL_CACHE"
@@ -50,7 +47,7 @@ echo ""
 # -- Run --------------------------------------------------------------------
 cd "$PROJECT_DIR"
 
-python scripts/train_hello_world.py \
+$PYTHON scripts/train_hello_world.py \
     --model_id        "Qwen/Qwen2.5-1.5B-Instruct" \
     --output_dir      "$OUTPUT_DIR" \
     --max_steps       100 \
