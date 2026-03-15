@@ -12,7 +12,7 @@ import argparse
 import torch
 from datasets import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
-from peft import LoraConfig, TaskType
+from peft import LoraConfig, TaskType, get_peft_model
 from trl import SFTTrainer, SFTConfig
 
 
@@ -92,8 +92,8 @@ def main():
                         "gate_proj", "up_proj", "down_proj"],
         bias="none",
     )
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Trainable parameters (LoRA): {trainable / 1e6:.2f}M")
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
 
     # -----------------------------------------------------------------------
     # Dataset
@@ -118,13 +118,13 @@ def main():
         save_total_limit=1,
         report_to="none",            # no W&B for hello-world
         max_seq_length=256,
+        dataset_text_field="text",
     )
 
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
-        peft_config=lora_config,
     )
 
     print("\nStarting training...")
