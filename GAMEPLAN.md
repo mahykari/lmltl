@@ -27,7 +27,9 @@ From the paper (arXiv:2402.16905v2):
 - **Key finding from Table 2:** Of the LLM-only violations, 14.33% were hallucinations (wrong location) and 33.67% were *arithmetic errors* (miscounting safe choices). The counting task is where LLMs collapse.
 - **The 4% failure of TSL:** All TSL failures were point-in-time (the LLM didn't follow the prompt modifier), never procedural (the automaton is correct by construction).
 
-**What this tells us for our design:** Their Task 3 (counting) is exactly the kind of property we predict is hard to internalize. Their Tasks 1–2 (sequencing/ordering) are star-free and should be learnable. We can design our spec ladder to mirror theirs.
+**What this tells us for our design:** Their Task 3 (counting) is exactly the kind of property we predict is hard to internalize. Their Tasks 1–2 (sequencing/ordering) are star-free and should be learnable. We can design our spec categories to mirror theirs.
+
+**Important caveat:** The comparison with Rothkopf is qualitative, not quantitative. Our setup differs in model size (~1000x), model family, training method, domain, and predicate evaluation. We do not claim our numbers are directly comparable to theirs. The value is that they observed the same counting barrier in an independent setup, which corroborates our findings.
 
 ---
 
@@ -53,9 +55,9 @@ From the paper (arXiv:2402.16905v2):
 
 ---
 
-## Phase 1 — Build the Monitor (Week 2)
+## Phase 1 — Build the Monitors (Week 2)
 
-**Goal:** Implement a ladder of temporal specs as Python monitor automata.
+**Goal:** Implement two categories of temporal specs as Python monitor automata, and test whether the formal boundary between them is also a learnability boundary.
 
 A *monitor* is a tiny Python class. It has:
 - A set of states (just integers).
@@ -64,35 +66,62 @@ A *monitor* is a tiny Python class. It has:
 
 No LLM-as-judge. We use simple, deterministic predicate evaluation — keyword/phrase matching, or a small classifier. This eliminates the noisy-sensor problem from the Rothkopf architecture entirely. The predicates are things like "does this response contain the sentence ŝ?" or "does this response mention location X?" — checkable without an LLM.
 
-### The Spec Ladder
+**Predicate robustness:** Raw keyword matching is vulnerable to reward hacking (the model inserts keywords without meaningful constraint satisfaction). To mitigate this, predicates should check that the keyword appears in a coherent sentence — using template-based checks or a lightweight NLI classifier. A sample of "satisfying" traces must be manually inspected for degeneracy.
 
-| Tier | Property (English) | Formal | Monitor states | Type |
-|------|-------------------|--------|:---:|------|
-| 1 | Every response contains keyword *k* | **G**(*p*) | 1 | Safety, trivially local |
-| 2 | After user asks about A, next response mentions B | **G**(*a* → **X***b*) | 2 | Response, star-free |
-| 3 | Every other response contains sentence ŝ (strict alternation) | *s* ∧ **G**(*s* ↔ ¬**X***s*) | 2 | Star-free, requires own-output tracking |
-| 4 | Mention A before B, B before C (Rothkopf-style sequencing) | ¬*c* **W** (*a* ∧ *b*) | ~4–8 | Star-free, multi-state |
-| 5 | Every 3rd response contains sentence ŝ | *s* at positions *i* ≡ 0 (mod 3) | 3 | **Non-star-free** (counting) |
+### Spec Categories
 
-Tiers 1–4 are LTL-definable. Tier 5 is ω-regular but not LTL. The Schützenberger-McNaughton-Papert theorem says this is the formal boundary. Our experiment tests whether it's also the *learnability* boundary.
+The specs are organized into two **categories** based on their position in the formal language hierarchy, not by difficulty. The ordering within each category is not meaningful — some "lower" specs may be harder to learn than "higher" ones.
 
-**What I write:** A `Monitor` base class and concrete subclasses for each tier. Unit tests. Optionally, I use Spot (the automata library) to compile LTL formulas and cross-check the hand-coded monitors.
+#### Category A — Star-free (LTL-definable)
+
+| Spec | Property (English) | Formal | Monitor states |
+|------|-------------------|--------|:---:|
+| A1 | Every response contains keyword *k* | **G**(*p*) | 1 |
+| A2 | After user asks about A, next response mentions B | **G**(*a* → **X***b*) | 2 |
+| A3 | After user says X, respond with A; after user says Y, respond with B; these must strictly alternate | (user-driven alternation) | 2 |
+| A4 | Mention A before B, B before C (Rothkopf-style sequencing) | ¬*c* **W** (*a* ∧ *b*) | ~4–8 |
+| A5 | Mention A in the first response, never mention A again, mention B in the last response | (positional, no counting) | 3 |
+
+#### Category B — Non-star-free (ω-regular, not LTL-definable)
+
+| Spec | Property (English) | Formal | Monitor states |
+|------|-------------------|--------|:---:|
+| B1 | Every 3rd response contains sentence ŝ | *s* at positions *i* ≡ 0 (mod 3) | 3 |
+| B2 | An even number of responses mention keyword *k* | parity of *k*-occurrences | 2 |
+
+Specs A1–A5 are LTL-definable. Specs B1–B2 are ω-regular but not LTL. The Schützenberger-McNaughton-Papert theorem says this is the formal boundary. Our experiment tests whether it's also the *learnability* boundary.
+
+**Note on A3 vs. the original alternation spec:** The original Tier 3 (strict alternation of own output) conflated temporal reasoning with self-output tracking. A3 isolates the temporal constraint by making alternation depend on *user* inputs, which the model can see in context.
+
+**Note on A5:** This spec serves as a difficulty-matched control for B1. Both require precise positional tracking and have similar monitor complexity (3 states), but A5 is star-free. If A5 succeeds and B1 fails after training, the counting explanation is strengthened.
+
+**Note on finite vs. infinite traces:** The non-star-free character of B1 and B2 holds for infinite words. On fixed-length conversations, these reduce to finite conjunctions. To preserve the counting difficulty, conversation lengths must be variable (sampled uniformly from, say, 10–30 turns) so the model cannot memorize a fixed pattern. This is discussed further in Phase 2.
+
+**What I write:** A `Monitor` base class and concrete subclasses for each spec. Unit tests. Optionally, I use Spot (the automata library) to compile LTL formulas and cross-check the hand-coded monitors.
 **What you review:** Are the specs correct? Do the monitors faithfully implement them? This is pure formal methods — your home turf.
 
 ---
 
 ## Phase 2 — Baseline Evaluation (Week 3)
 
-**Goal:** Measure how well the *base model* (no training) follows each spec using only prompting. This replicates the Rothkopf "LLM alone" condition on our spec ladder.
+**Goal:** Measure how well the *base model* (no training) follows each spec using only prompting. This replicates the Rothkopf "LLM alone" condition on our spec categories.
 
 **Setup:**
 
-1. For each spec tier, write a system prompt explaining the constraint in plain English (mirroring what Rothkopf did for their NL prompts).
-2. Simulate 100 multi-turn conversations per tier. I'll write a "fake user" script that sends templated inputs (e.g., "tell me about topic A", "continue the story", etc.).
+1. For each spec, write a system prompt explaining the constraint in plain English (mirroring what Rothkopf did for their NL prompts).
+2. Simulate 200 multi-turn conversations per spec. Conversation length is sampled uniformly from 10–30 turns (not fixed — see Phase 1 note on finite vs. infinite traces).
 3. The monitor scores each conversation: did it satisfy φ? At which turn did it first violate?
-4. Compute adherence = % of conversations with zero violations.
+4. Compute adherence = % of conversations with zero violations. Report 95% confidence intervals. Use Fisher's exact test for pairwise comparisons between specs (especially A5 vs. B1 — the critical matched-difficulty pair).
 
-**Deliverable:** Table 1 of the paper. "Baseline adherence of Qwen 2.5-1.5B to temporal specs of increasing complexity, prompt-only." If this shows a clear degradation from Tier 1 to Tier 5, that's already evidence for the conjecture — even without any training.
+**Simulated user design:** The "fake user" sends templated inputs, but these must be carefully designed per spec:
+- For sequencing specs (A4): include adversarial orderings (ask about C before A).
+- For alternation specs (A3): include long stretches without relevant triggers.
+- For positional specs (A5, B1): vary conversation length so the model cannot rely on fixed position.
+- Document all templates as part of the experimental methodology.
+
+**Train/test split:** User prompt templates are split into separate sets for training (Phase 3) and evaluation. Evaluation uses different topics, phrasings, and conversation starters than training. Report both in-distribution and out-of-distribution adherence.
+
+**Deliverable:** Table 1 of the paper. "Baseline adherence of Qwen 2.5-1.5B to temporal specs, prompt-only, by category." The key comparison is Category A vs. Category B, not a monotonic degradation across tiers.
 
 **What I write:** The evaluation harness (conversation simulator + monitor scoring), the system prompts, the Slurm job to run inference.
 **What you do:** Review the prompts (are they fair? are they equivalent to what a reasonable developer would write?), submit the job, look at the results.
@@ -116,18 +145,24 @@ That's it. The automaton provides the reward signal for free. HuggingFace TRL ha
 
 ### Training Details
 
-- **One LoRA adapter per tier.** LoRA adds a small number of trainable parameters (~1–4M) on top of the frozen base model. Cheap to train, cheap to store, clean comparison.
-- **Conversation length:** 10–20 turns per rollout (matching Rothkopf's 20).
+- **One LoRA adapter per spec.** LoRA adds a small number of trainable parameters on top of the frozen base model. Cheap to train, cheap to store, clean comparison.
+- **Conversation length:** Variable, sampled uniformly from 10–30 turns per rollout (matching Phase 2).
 - **Group size:** G = 4 or 8 (we tune this).
-- **Training steps:** Start with K = 500, check learning curves, extend if needed.
+- **Training steps:** Start with K = 500, check learning curves, extend if needed up to K = 5000.
 - **Checkpointing:** Save every 50 steps so we can plot adherence vs. training step.
-- **Evaluation at each checkpoint:** Run the Phase 2 evaluation harness (100 conversations, monitor-scored) to get an adherence number.
+- **Evaluation at each checkpoint:** Run the Phase 2 evaluation harness (200 conversations, monitor-scored, using held-out templates) to get an adherence number.
+
+### Ablations
+
+- **LoRA rank sweep (critical comparison only):** For the A5 vs. B1 comparison, sweep LoRA rank ∈ {8, 16, 32, 64} and training steps ∈ {500, 1000, 2000, 5000}. If A5 converges across ranks while B1 does not, the argument that counting is fundamentally hard (not just capacity-limited) is much stronger.
+- **Reward scheme:** Test both partial-credit reward (turns_satisfied / total_turns) and binary reward (1.0 if the entire conversation satisfies φ, 0.0 otherwise). Partial credit creates a smoother learning signal for safety properties than for counting — if the gap persists under binary reward, the finding is cleaner.
+- **Model scale:** Run the critical comparison (A5 vs. B1) on Qwen 2.5-7B as well as 1.5B. A single model size cannot distinguish "counting is fundamentally unlearnable" from "1.5B parameters is insufficient for counting." If 7B also fails at B1, the argument is much stronger. If 7B succeeds, the finding is equally interesting (the boundary shifts with scale).
 
 ### What Could Go Wrong
 
-- **Reward hacking:** The model learns to output the literal keyword/phrase in every response regardless of context. Mitigation: we also measure response quality (perplexity, coherence) to check for degenerate solutions.
-- **Training instability:** GRPO on small models can be finicky. If this happens, we fall back to DPO (simpler: generate traces, label as accept/reject by monitor, fine-tune with contrastive loss).
-- **Multi-turn rollout cost:** Generating 8 × 20-turn conversations per training step is expensive. Mitigation: start with 10-turn conversations and shorter rollouts; extend once we know it works.
+- **Reward hacking:** The model learns to output the literal keyword/phrase in every response regardless of context. Mitigation: predicates check for coherent usage (see Phase 1), and we manually inspect a sample of satisfying traces for degeneracy.
+- **Training instability:** GRPO on small models can be finicky. If GRPO fails, we report the failure itself as a finding and diagnose the cause. We do **not** silently fall back to DPO, because DPO is offline contrastive learning, not online RL — it cannot support the paper's claim about RL internalization. If we run DPO, it is presented as a separate experiment with different claims.
+- **Multi-turn rollout cost:** Generating 8 × 30-turn conversations per training step is expensive. Mitigation: start with shorter rollouts; extend once we know it works.
 
 **What I write:** The GRPO training script, the reward function wrapper, the evaluation-at-checkpoint script, the Slurm job.
 **What you do:** Submit training jobs, monitor loss curves and adherence curves, flag anything weird.
@@ -138,23 +173,33 @@ That's it. The automaton provides the reward signal for free. HuggingFace TRL ha
 
 ### The Key Figure
 
-A plot with 5 groups (one per tier) and 2 bars each: baseline (prompt-only) adherence vs. post-GRPO adherence. The prediction:
+A plot with 7 groups (one per spec) and 2 bars each: baseline (prompt-only) adherence vs. post-GRPO adherence. The prediction:
 
 ```
-Tier 1 (G p):           ████████████ 95%+  (baseline already high)
-Tier 2 (G(a→Xb)):       █████████░░░ ~80%  →  ████████████ 95%+
-Tier 3 (alternation):   ██████░░░░░░ ~50%  →  ███████████░ ~90%
-Tier 4 (sequencing):    ████░░░░░░░░ ~30%  →  █████████░░░ ~80%
-Tier 5 (counting):      ██░░░░░░░░░░ ~15%  →  ████░░░░░░░░ ~35%  ← the boundary
+Category A (star-free):
+  A1 (always k):         ████████████ 95%+  (baseline already high)
+  A2 (a→Xb):             █████████░░░ ~80%  →  ████████████ 95%+
+  A3 (alternation):      ██████░░░░░░ ~50%  →  ███████████░ ~90%
+  A4 (sequencing):       ████░░░░░░░░ ~30%  →  █████████░░░ ~80%
+  A5 (positional):       ████░░░░░░░░ ~30%  →  █████████░░░ ~80%
+
+Category B (non-star-free):
+  B1 (every 3rd):        ██░░░░░░░░░░ ~15%  →  ████░░░░░░░░ ~35%  ← the boundary
+  B2 (parity):           ██░░░░░░░░░░ ~15%  →  ████░░░░░░░░ ~35%  ← the boundary
 ```
 
-If Tiers 1–4 reach high adherence and Tier 5 does not, the star-free / non-star-free boundary is the learnability boundary. That's the paper's main result.
+The critical comparison is A5 vs. B1: both require positional tracking with 3-state monitors, but A5 is star-free and B1 is not. If A5 reaches high adherence and B1 does not, the counting explanation is specifically supported (not just "harder specs are harder").
+
+If Category A specs reach high adherence and Category B specs do not, the star-free / non-star-free boundary is the learnability boundary. That's the paper's main result.
 
 ### Secondary Analyses
 
-- **Learning curves:** Adherence vs. training step, per tier. Does the monitor's state count predict convergence speed?
-- **Quality check:** Perplexity or coherence scores before/after training. Does RLHF degrade response quality? (If not, that's a strong advantage over the wrapper approach.)
-- **Comparison with Rothkopf:** Our Tier 4 mirrors their Task 1. We can directly compare "GRPO-trained small model" vs. "GPT-4 with automaton wrapper" vs. "GPT-4 prompt-only."
+- **Learning curves:** Adherence vs. training step, per spec. Is there a qualitative difference in convergence behavior between categories?
+- **LoRA rank sensitivity:** Does increasing adapter capacity close the gap for Category B? If not, the limitation is fundamental, not capacity-driven.
+- **Model scale:** Does the boundary hold at 7B? Shift? Disappear?
+- **Quality check:** Perplexity or coherence scores before/after training. Does GRPO degrade response quality? (If not, that's a strong advantage over the wrapper approach.)
+- **Reward scheme comparison:** Do partial-credit and binary reward produce the same category-level gap?
+- **Comparison with Rothkopf:** Qualitative only. Our A4 mirrors their Task 1. We note that they observed the same counting barrier independently, corroborating our finding. No direct numerical comparison (different model, domain, and evaluation).
 
 ### Paper Structure
 
@@ -162,7 +207,7 @@ If Tiers 1–4 reach high adherence and Tier 5 does not, the star-free / non-sta
 2. Background: LTL, ω-regular languages, star-free hierarchy, reward machines.
 3. The problem: can RLHF internalize temporal specs?
 4. Method: monitor compilation + GRPO training.
-5. Experiments: the spec ladder, baseline, training, results.
+5. Experiments: the spec categories, baseline, training, results.
 6. Analysis: the expressiveness boundary.
 7. Connection to dpm / private RV (future work).
 8. Conclusion.
@@ -202,7 +247,7 @@ The project is built around Claude Code with specialist skills — reusable agen
 - A `done() -> bool` property indicating if the monitor has reached a permanent verdict.
 - Unit tests exercising accept/reject traces.
 
-**When to invoke:** Phase 1 (building the spec ladder), and whenever we add or modify a spec.
+**When to invoke:** Phase 1 (building the spec categories), and whenever we add or modify a spec.
 
 **Dependencies:** None for hand-coded monitors. Spot (`pip install spot`) for automated LTL-to-automaton compilation and cross-checking.
 
@@ -260,10 +305,11 @@ The project is built around Claude Code with specialist skills — reusable agen
 **Input:** One or more CSV files from the `evaluation` skill, plus a figure type (bar chart, learning curve, comparison table).
 
 **Output:** PDF/PNG figures and the matplotlib script that generated them. Specific figures planned:
-- **Figure 1 (the key result):** Grouped bar chart — baseline vs. post-GRPO adherence per spec tier.
-- **Figure 2 (learning curves):** Adherence vs. training step, one line per tier.
-- **Figure 3 (comparison):** Our results vs. Rothkopf's numbers on comparable specs.
-- **Table 1:** Full numerical results with confidence intervals.
+- **Figure 1 (the key result):** Grouped bar chart — baseline vs. post-GRPO adherence per spec, grouped by category (A vs. B). Highlight the A5 vs. B1 matched-difficulty comparison.
+- **Figure 2 (learning curves):** Adherence vs. training step, one line per spec, colored by category.
+- **Figure 3 (LoRA rank ablation):** Adherence vs. LoRA rank for A5 and B1 — does capacity close the gap?
+- **Figure 4 (model scale):** A5 vs. B1 at 1.5B and 7B — does the boundary hold?
+- **Table 1:** Full numerical results with 95% confidence intervals.
 
 **When to invoke:** Phase 4, but also useful during Phase 3 to eyeball learning curves as training progresses.
 
@@ -273,7 +319,7 @@ The project is built around Claude Code with specialist skills — reusable agen
 
 ```
 Phase 0:  slurm (configure) ──────────────────────────────────┐
-Phase 1:  monitor (build spec ladder)                         │
+Phase 1:  monitor (build spec categories)                      │
 Phase 2:  evaluation (baseline) ← monitor + slurm             │
 Phase 3:  training (GRPO) ← monitor + evaluation + slurm      │
 Phase 4:  plotting (figures) ← evaluation outputs              │
